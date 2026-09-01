@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A simple Python GUI framework that uses HTML as the interface"
 readme = "README.md"
 requires-python = ">=3.9"
-license = "LicenseRef-WebGUI"
+license = "MIT"
 license-files = ["LICENSE"]
 
 dependencies = [
