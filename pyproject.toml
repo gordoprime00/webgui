@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "webgui"
+name = "pywebgui"
 version = "0.1.0"
 description = "A simple Python GUI framework that uses HTML as the interface"
 readme = "README.md"
