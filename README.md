@@ -7,7 +7,7 @@ WebGUI lets you make Python applications with a web browser as the GUI without n
 ## Installation
 
 ```bash
-pip install webgui
+pip install webgui-py
 ```
 
 ## Basic Example
@@ -59,6 +59,24 @@ print(name)
 
 The browser displays an input box and returns what the user entered.
 
+## Audio
+
+WebGUI includes audio features for playing, looping, and stopping audio files.
+
+You can play an audio file with:
+
+```python
+webgui.audio.play("music.mp3", False)
+```
+
+The play() function takes two arguments:
+filename — the path to the audio file.
+loop — True to loop the audio or False to play it once.
+You can stop the audio with:
+```python
+webgui.audio.stop()
+```
+
 ## Why WebGUI?
 
 WebGUI is designed to be simple.
@@ -74,6 +92,7 @@ You don't need to write JavaScript or deal directly with HTTP communication.
 * Automatic browser opening
 * Simple button handling
 * Text input
+* audio player
 * Multiple HTML pages
 * No JavaScript required in your application
 
