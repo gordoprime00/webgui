@@ -1,4 +1,4 @@
-from flask import Flask, request, Response
+from flask import Flask, request, Response, redirect
 import threading
 import time
 import webbrowser
@@ -6,10 +6,13 @@ import os
 import re
 import urllib.parse
 
+
 app = Flask(__name__)
+
 
 _current_page = ""
 _buttons_clicked = []
+
 _running = False
 _server_thread = None
 _port = 5000
@@ -37,29 +40,72 @@ def _process_html(html):
 
 		return (
 			f'<button{before}name="{name}"{after} '
-			f'onclick="fetch(\'/__gui_button?name={encoded_name}\', '
-			f'{{method: \'POST\'}}); return false;">'
+			f'onclick="fetch(\'/__gui_button?name={encoded_name}\')'
+			f'.then(() => window.location.reload()); '
+			f'return false;">'
 		)
 
-	return re.sub(pattern, replace_button, html)
+	return re.sub(
+		pattern,
+		replace_button,
+		html
+	)
 
 
 def _read_page():
 
 	if not _current_page:
-		return "<h1>No page has been sent.</h1>"
+		return """
+		<!DOCTYPE html>
+		<html>
+		<head>
+			<title>WebGUI</title>
+		</head>
+		<body>
+			<h1>No page has been sent.</h1>
+		</body>
+		</html>
+		"""
 
 	if not os.path.isfile(_current_page):
-		return f"<h1>File not found: {_current_page}</h1>"
+
+		return f"""
+		<!DOCTYPE html>
+		<html>
+		<head>
+			<title>WebGUI Error</title>
+		</head>
+		<body>
+			<h1>File not found</h1>
+			<p>{_current_page}</p>
+		</body>
+		</html>
+		"""
 
 	try:
 
-		with open(_current_page, "r", encoding="utf-8") as file:
+		with open(
+			_current_page,
+			"r",
+			encoding="utf-8"
+		) as file:
+
 			html = file.read()
 
 	except Exception as error:
 
-		return f"<h1>Could not read page</h1><p>{error}</p>"
+		return f"""
+		<!DOCTYPE html>
+		<html>
+		<head>
+			<title>WebGUI Error</title>
+		</head>
+		<body>
+			<h1>Could not read page</h1>
+			<p>{error}</p>
+		</body>
+		</html>
+		"""
 
 	return _process_html(html)
 
@@ -110,11 +156,11 @@ def _page():
 
 	return Response(
 		_read_page(),
-		content_type="text/html"
+		content_type="text/html; charset=utf-8"
 	)
 
 
-@app.route("/__gui_button", methods=["POST"])
+@app.route("/__gui_button", methods=["GET", "POST"])
 def _button_clicked():
 
 	name = request.args.get("name")
@@ -131,13 +177,14 @@ def _input_submitted():
 	global _input_value
 	global _input_waiting
 
-	_input_value = request.form.get("value", "")
+	_input_value = request.form.get(
+		"value",
+		""
+	)
+
 	_input_waiting = False
 
-	return Response(
-		_read_page(),
-		content_type="text/html"
-	)
+	return redirect("/")
 
 
 # ============================================================
@@ -162,7 +209,8 @@ def init(port=5000, open_browser=True):
 			host="127.0.0.1",
 			port=_port,
 			debug=False,
-			use_reloader=False
+			use_reloader=False,
+			threaded=True
 		)
 
 	_server_thread = threading.Thread(
@@ -185,7 +233,7 @@ def send(filename):
 
 	global _current_page
 
-	_current_page = filename
+	_current_page = os.path.abspath(filename)
 
 
 def button(name):
