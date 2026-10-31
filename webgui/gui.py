@@ -6,6 +6,7 @@ import os
 import re
 import urllib.parse
 import html
+import ast
 
 
 app = Flask(__name__)
@@ -13,6 +14,10 @@ app = Flask(__name__)
 
 _current_page = ""
 _page_version = 0
+
+_html_cache = {}
+_html_cache_lock = threading.Lock()
+_page_file_signature = None
 
 _running = False
 
@@ -50,7 +55,7 @@ def _process_html(source):
 	def replace_button(match):
 
 		before = match.group(1)
-		name = match.group(2)
+		name = html.unescape(match.group(2))
 		after = match.group(3)
 
 		encoded_name = urllib.parse.quote(
@@ -71,6 +76,90 @@ def _process_html(source):
 		replace_button,
 		source
 	)
+
+
+_UI_INSTRUCTIONS = {
+	"tle": lambda value: f"<title>{html.escape(value)}</title>",
+	"title": lambda value: f"<title>{html.escape(value)}</title>",
+	"h1": lambda value: f"<h1>{html.escape(value)}</h1>",
+	"txt": lambda value: f"<p>{html.escape(value)}</p>",
+	"btn": lambda value: (
+		f'<button type="button" name="{html.escape(value, quote=True)}">'
+		f'{html.escape(value)}</button>'
+	),
+}
+
+
+def _ui_error(filename, message, line=None):
+	location = f"{filename}:{line}" if line is not None else str(filename)
+	return ValueError(f"{location}: {message}")
+
+
+def _parse_ui(filename, source):
+	lines = source.splitlines()
+	body = []
+	title = None
+	for line_number, line in enumerate(lines, 1):
+		stripped = line.strip()
+		if not stripped or stripped.startswith("#") or stripped.startswith("//"):
+			continue
+		match = re.fullmatch(r"([A-Za-z][A-Za-z0-9_]*)\s*:\s*(.+?)\s*", stripped)
+		if not match:
+			raise _ui_error(filename, "expected instruction: quoted value", line_number)
+		name, literal = match.groups()
+		try:
+			value = ast.literal_eval(literal)
+		except (SyntaxError, ValueError) as error:
+			raise _ui_error(filename, "expected a quoted string", line_number) from error
+		if not isinstance(value, str):
+			raise _ui_error(filename, "instruction value must be a string", line_number)
+		if name == "textincoding":
+			continue
+		generator = _UI_INSTRUCTIONS.get(name)
+		if generator is None:
+			raise _ui_error(filename, f"unsupported instruction {name!r}", line_number)
+		if name in ("tle", "title"):
+			title = generator(value)
+		else:
+			body.append(generator(value))
+	return "<!DOCTYPE html>\n<html>\n<head>" + (title or "<title>WebGUI</title>") + "</head>\n<body>\n" + "\n".join(body) + "\n</body>\n</html>"
+
+
+def _load_ui(filename, stat_result):
+	signature = (stat_result.st_mtime_ns, stat_result.st_size)
+	with _html_cache_lock:
+		cached = _html_cache.get(filename)
+		if cached and cached[0] == signature:
+			return cached[1]
+	try:
+		with open(filename, "rb") as file:
+			data = file.read()
+		# Encoding declaration is ASCII-compatible and can be read before decoding.
+		declaration = re.search(rb"(?im)^\s*textincoding\s*:\s*(['\"])([^'\"]+)\1\s*(?:#.*)?$", data)
+		encoding = declaration.group(2).decode("ascii") if declaration else "utf-8-sig"
+		try:
+			"".encode(encoding)
+		except LookupError as error:
+			line = data[:declaration.start()].count(b"\n") + 1 if declaration else 1
+			raise _ui_error(filename, f"invalid encoding name {encoding!r}", line) from error
+		try:
+			source = data.decode(encoding)
+		except UnicodeDecodeError as error:
+			line = data[:error.start].count(b"\n") + 1
+			raise _ui_error(filename, f"file cannot be decoded as {encoding}", line) from error
+		page = _parse_ui(filename, source)
+	except OSError as error:
+		raise _ui_error(filename, f"could not read file: {error}") from error
+	with _html_cache_lock:
+		_html_cache[filename] = (signature, page)
+	return page
+
+
+def clear_html_cache():
+	global _page_version
+	with _html_cache_lock:
+		_html_cache.clear()
+	_page_version += 1
 
 
 # ============================================================
@@ -122,14 +211,11 @@ def _read_page():
 
 
 	try:
-
-		with open(
-			_current_page,
-			"r",
-			encoding="utf-8"
-		) as file:
-
-			source = file.read()
+		if os.path.splitext(_current_page)[1].lower() == ".ui":
+			page = _load_ui(_current_page, os.stat(_current_page))
+		else:
+			with open(_current_page, "r", encoding="utf-8") as file:
+				page = file.read()
 
 	except Exception as error:
 
@@ -145,14 +231,14 @@ def _read_page():
 
 <h1>Could not read page</h1>
 
-<p>{html.escape(str(error))}</p>
+		<p>{html.escape(str(error))}</p>
 
 </body>
 
 </html>
 """
 
-	return _process_html(source)
+	return _process_html(page)
 
 
 # ============================================================
@@ -185,6 +271,26 @@ def _no_cache_response(content, content_type):
 def _page():
 
 	page = _read_page()
+
+	with _input_lock:
+		input_waiting = _input_waiting
+		input_question = _input_question
+
+	if input_waiting:
+		input_ui = f'''
+<form action="/__gui_input" method="post" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0008;z-index:2147483647">
+	<div style="background:white;color:black;padding:1.5em;border-radius:.5em;max-width:90%;box-shadow:0 2px 12px #0008">
+		<label>{html.escape(str(input_question))}<br>
+			<input type="text" name="value" autofocus style="margin-top:.75em">
+		</label>
+		<button type="submit" style="margin-left:.5em">Submit</button>
+	</div>
+</form>
+'''
+		if "</body>" in page:
+			page = page.replace("</body>", input_ui + "</body>", 1)
+		else:
+			page += input_ui
 
 	script = f"""
 <script>
@@ -304,6 +410,17 @@ def _button_clicked():
 
 @app.route("/__gui_page_version", methods=["GET"])
 def _page_version_request():
+	global _page_version
+	global _page_file_signature
+	if _current_page and os.path.splitext(_current_page)[1].lower() == ".ui":
+		try:
+			stat_result = os.stat(_current_page)
+			signature = (stat_result.st_mtime_ns, stat_result.st_size)
+		except OSError:
+			signature = None
+		if _page_file_signature is not None and signature != _page_file_signature:
+			_page_version += 1
+		_page_file_signature = signature
 
 	return _no_cache_response(
 		str(_page_version),
@@ -333,6 +450,7 @@ def _input_submitted():
 
 	global _input_value
 	global _input_waiting
+	global _page_version
 
 	value = request.form.get(
 		"value",
@@ -343,6 +461,7 @@ def _input_submitted():
 
 		_input_value = value
 		_input_waiting = False
+		_page_version += 1
 
 	return _no_cache_response(
 		_read_page(),
@@ -401,12 +520,18 @@ def send(filename):
 
 	global _current_page
 	global _page_version
+	global _page_file_signature
 
 	_current_page = os.path.abspath(
 		filename
 	)
 
 	_page_version += 1
+	try:
+		stat_result = os.stat(_current_page)
+		_page_file_signature = (stat_result.st_mtime_ns, stat_result.st_size)
+	except OSError:
+		_page_file_signature = None
 
 
 # ============================================================
@@ -475,6 +600,9 @@ def get_input(question):
 		_input_value = None
 		_input_question = question
 		_input_waiting = True
+
+	global _page_version
+	_page_version += 1
 
 	while True:
 
