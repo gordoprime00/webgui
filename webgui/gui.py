@@ -1,4 +1,5 @@
 from flask import Flask, request, Response
+from werkzeug.serving import make_server
 import threading
 import time
 import webbrowser
@@ -7,6 +8,8 @@ import re
 import urllib.parse
 import html
 import ast
+import subprocess
+import sys
 
 
 app = Flask(__name__)
@@ -22,6 +25,7 @@ _page_file_signature = None
 _running = False
 
 _server_thread = None
+_server = None
 _port = 5000
 
 
@@ -477,24 +481,33 @@ def init(port=5000, open_browser=True):
 
 	global _running
 	global _server_thread
+	global _server
 	global _port
 
 	if _running:
-
 		return
 
 	_port = port
+
+	try:
+		_server = make_server(
+			"127.0.0.1",
+			_port,
+			app,
+			threaded=True
+		)
+	except Exception:
+		_server = None
+		_running = False
+		raise
+
 	_running = True
 
 	def run_server():
-
-		app.run(
-			host="127.0.0.1",
-			port=_port,
-			debug=False,
-			use_reloader=False,
-			threaded=True
-		)
+		try:
+			_server.serve_forever()
+		finally:
+			pass
 
 	_server_thread = threading.Thread(
 		target=run_server,
@@ -503,14 +516,12 @@ def init(port=5000, open_browser=True):
 
 	_server_thread.start()
 
-	time.sleep(1)
+	time.sleep(0.2)
 
-	if open_browser:
-
+	if open_browser and _running:
 		webbrowser.open(
 			f"http://127.0.0.1:{_port}"
 		)
-
 
 # ============================================================
 # SEND
@@ -578,12 +589,129 @@ def running():
 # CLOSE
 # ============================================================
 
+def _close_browser_tab():
+
+	if sys.platform != "darwin":
+		return
+
+	url_prefix = f"http://127.0.0.1:{_port}"
+
+	script = f"""
+	set targetPrefix to "{url_prefix}"
+
+	try
+		tell application "Safari"
+			if it is running then
+				repeat with browserWindow in windows
+					repeat with browserTab in tabs of browserWindow
+						if (URL of browserTab) starts with targetPrefix then
+							close browserTab
+						end if
+					end repeat
+				end repeat
+			end if
+		end tell
+	end try
+
+	try
+		tell application "Google Chrome"
+			if it is running then
+				repeat with browserWindow in windows
+					set tabIndex to (count of tabs of browserWindow)
+					repeat while tabIndex > 0
+						if (URL of tab tabIndex of browserWindow) starts with targetPrefix then
+							close tab tabIndex of browserWindow
+						end if
+						set tabIndex to tabIndex - 1
+					end repeat
+				end repeat
+			end if
+		end tell
+	end try
+
+	try
+		tell application "Brave Browser"
+			if it is running then
+				repeat with browserWindow in windows
+					set tabIndex to (count of tabs of browserWindow)
+					repeat while tabIndex > 0
+						if (URL of tab tabIndex of browserWindow) starts with targetPrefix then
+							close tab tabIndex of browserWindow
+						end if
+						set tabIndex to tabIndex - 1
+					end repeat
+				end repeat
+			end if
+		end tell
+	end try
+
+	try
+		tell application "Microsoft Edge"
+			if it is running then
+				repeat with browserWindow in windows
+					set tabIndex to (count of tabs of browserWindow)
+					repeat while tabIndex > 0
+						if (URL of tab tabIndex of browserWindow) starts with targetPrefix then
+							close tab tabIndex of browserWindow
+						end if
+						set tabIndex to tabIndex - 1
+					end repeat
+				end repeat
+			end if
+		end tell
+	end try
+	"""
+
+	try:
+		subprocess.run(
+			["osascript", "-e", script],
+			capture_output=True,
+			text=True,
+			timeout=5,
+			check=False
+		)
+	except (OSError, subprocess.TimeoutExpired):
+		pass
+
+
 def close():
 
 	global _running
+	global _server
+	global _server_thread
+	global _input_value
+	global _input_waiting
+	global _input_question
+	global _page_version
+
+	if not _running and _server is None:
+		return
 
 	_running = False
+	_page_version += 1
 
+	with _input_lock:
+		_input_value = None
+		_input_waiting = False
+		_input_question = ""
+
+	with _button_lock:
+		_button_events.clear()
+
+	_close_browser_tab()
+
+	server = _server
+	thread = _server_thread
+
+	_server = None
+	_server_thread = None
+
+	if server is not None:
+		server.shutdown()
+		server.server_close()
+
+	if thread is not None and thread.is_alive():
+		thread.join(timeout=3)
 
 # ============================================================
 # INPUT
